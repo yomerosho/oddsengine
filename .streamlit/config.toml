@@ -1,0 +1,13 @@
+[theme]
+base = "dark"
+primaryColor = "#10b981"          # emerald — used for positive EV, success, primary CTA
+backgroundColor = "#0a0e14"       # near-black, terminal feel
+secondaryBackgroundColor = "#11161d"   # panels and inputs
+textColor = "#e6e6e6"
+font = "monospace"
+
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,41 @@
+name: refresh-odds
+
+# OPTIONAL: scheduled refresh during US sports hours so the dashboard is fresh
+# when Yomi opens it. Comment out the cron lines below if you want pure
+# button-triggered refreshes only (cheapest option).
+#
+# Schedule notes (UTC):
+#   00:00 UTC = 7 PM CT (US prime-time tipoff)
+#   01:00 UTC = 8 PM CT
+#   23:00 UTC = 6 PM CT (NBA late slate ingest)
+#
+# Each NBA refresh = ~24 credits. 500/month free quota. Adjust as needed.
+
+on:
+  # workflow_dispatch:        # manual trigger from GitHub UI
+  # schedule:
+  #   - cron: '0 23 * * *'    # 6 PM CT daily
+  #   - cron: '30 0 * * *'    # 7:30 PM CT daily
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Refresh NBA odds
+        env:
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "from src.odds_api import refresh_sport; print(refresh_sport('NBA', max_events=3))"
+      # Add MLB / NHL / SOCCER / Apify refreshes here as desired.
+      # Apify refreshes cost compute units — be deliberate.
