@@ -207,7 +207,16 @@ def _parse_pp_items(items: list[dict]) -> tuple[list[dict], dict]:
         })
         counters["lines_added"] += 1
 
-    return rows, counters
+    # Defensive dedupe on the DB unique key. Last occurrence wins.
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["platform"], r["sport"], r["player"], r["market"], r["line"], r["odds_tier"])
+        seen[key] = r
+    deduped = list(seen.values())
+    counters["deduplicated"] = len(rows) - len(deduped)
+    counters["lines_added"] = len(deduped)
+
+    return deduped, counters
 
 
 # ============================================================================
@@ -276,7 +285,19 @@ def _parse_ud_items(items: list[dict]) -> tuple[list[dict], dict]:
         })
         counters["lines_added"] += 1
 
-    return rows, counters
+    # Deduplicate by the same key the DB has a unique constraint on:
+    # (platform, sport, player, market, line, odds_tier).
+    # This actor emits the same prop more than once (over-row + under-row);
+    # we keep the LAST occurrence so the most recent scrape wins.
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["platform"], r["sport"], r["player"], r["market"], r["line"], r["odds_tier"])
+        seen[key] = r
+    deduped = list(seen.values())
+    counters["deduplicated"] = len(rows) - len(deduped)
+    counters["lines_added"] = len(deduped)
+
+    return deduped, counters
 
 
 # ============================================================================
