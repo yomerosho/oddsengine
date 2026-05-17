@@ -68,12 +68,42 @@ st.markdown(
         background: linear-gradient(90deg, transparent, {PALETTE['neutral']}55, transparent);
         margin: 1.2rem 0;
     }}
+    
 
     [data-testid="stSidebar"] {{ border-right: 1px solid #1f2937; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+# ============================================================================
+# Password gate (public Streamlit app, private access)
+# ============================================================================
+
+def _check_password() -> bool:
+    """Returns True if the user has entered the right password.
+
+    Stored in session state so the gate only shows once per session.
+    Password lives in secrets (APP_PASSWORD) and is never logged.
+    """
+    if st.session_state.get("password_ok"):
+        return True
+
+    st.markdown("# ◎ OddsEngine")
+    st.caption("Private access — enter password to continue.")
+    pw = st.text_input("Password", type="password", label_visibility="collapsed",
+                       placeholder="Password")
+    if pw:
+        expected = st.secrets.get("APP_PASSWORD", "")
+        if expected and pw == expected:
+            st.session_state["password_ok"] = True
+            st.rerun()
+        else:
+            st.error("Wrong password.")
+    st.stop()
+
+
+_check_password()
 
 
 # ============================================================================
