@@ -1,11 +1,16 @@
 """Apify ingest for PrizePicks and Underdog Fantasy lines.
 
-Ported from main.py:469-700 of the OpenClaw export. Two actors:
-- zen-studio/prizepicks-player-props  (leagues: NBA, MLB, NHL, Soccer)
-- zen-studio/underdog-player-props    (leagues: NBA, MLB, NHL, FIFA)
+Two actors:
+- zen-studio/prizepicks-player-props
+    Input  : {"leagues": ["NBA", "MLB", "NHL", "Soccer"]}
+    Output : items keyed by `stat`, `player_name`, `line`, `league`
+- brilliant_gum/sports-props-aggregator
+    Input  : {"platforms": ["underdog"], "sports": [...], "onlyLiveGames": false,
+              "includeInjuredPlayers": false}
+    Output : items keyed by `propType`, `playerName`, `line`, `sport`
 
-Apify charges per actor run (compute units). NEVER call these on app load.
-Always button-triggered, with a per-platform "last refreshed" timestamp.
+Apify charges per actor run. NEVER call these on app load — button-triggered
+only, with a per-platform "last refreshed" timestamp visible to the user.
 """
 from __future__ import annotations
 
@@ -20,13 +25,20 @@ except Exception:
 
 from . import db
 
+# ============================================================================
+# Actor IDs and input shapes
+# ============================================================================
+
 PP_ACTOR = "zen-studio/prizepicks-player-props"
-UD_ACTOR = "zen-studio/underdog-player-props"
-
 PP_APIFY_LEAGUES = ["NBA", "MLB", "NHL", "Soccer"]
-UD_APIFY_LEAGUES = ["NBA", "MLB", "NHL", "FIFA"]
 
-# PrizePicks `stat` strings → our internal market keys (mirrors main.py:429-451).
+UD_ACTOR = "brilliant_gum/sports-props-aggregator"
+UD_APIFY_SPORTS = ["NBA", "MLB", "SOCCER"]
+
+# ============================================================================
+# PrizePicks mappings (actor returns `stat` strings)
+# ============================================================================
+
 PP_STAT_TO_MARKET = {
     "Points": "player_points",
     "Rebounds": "player_rebounds",
@@ -49,10 +61,65 @@ PP_STAT_TO_MARKET = {
 
 PP_LEAGUE_TO_SPORT = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "SOCCER": "SOCCER"}
 
-# Underdog uses a slightly different schema. Same target market keys.
-UD_STAT_TO_MARKET = dict(PP_STAT_TO_MARKET)  # Apify normalizes most labels; extend here if needed
-UD_LEAGUE_TO_SPORT = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "FIFA": "SOCCER"}
+# ============================================================================
+# Underdog mappings — handles BOTH propType formats this actor emits.
+# Same actor returns "player_points" on some rows and "points" on others;
+# normalize both to our internal market keys before storage.
+# Markets without a sportsbook-prop equivalent (e.g. fantasy_points, 1q_*,
+# first_fg_attempt) are mapped to None and skipped — no consensus to compare.
+# ============================================================================
 
+UD_PROPTYPE_TO_MARKET: dict[str, str | None] = {
+    # ----- already in our format -----
+    "player_points":     "player_points",
+    "player_rebounds":   "player_rebounds",
+    "player_assists":    "player_assists",
+    "player_threes":     "player_threes",
+    "player_blocks":     "player_blocks",
+    "player_steals":     "player_steals",
+    "player_turnovers":  "player_turnovers",
+
+    # ----- short-form NBA variants the actor also emits -----
+    "points":            "player_points",
+    "rebounds":          "player_rebounds",
+    "assists":           "player_assists",
+    "threes_made":       "player_threes",
+    "pts_rebs_asts":     "player_points_rebounds_assists",
+
+    # ----- variants WITHOUT a sportsbook prop equivalent (skip) -----
+    "points_rebounds":   None,
+    "points_assists":    None,
+    "rebounds_assists":  None,
+    "fg_attempted":      None,
+    "3s_attempted":      None,
+    "ft_made":           None,
+    "fantasy_points":    None,
+    "first_fg_attempt":  None,
+    "1q_points":         None,
+    "1q_3pointers_made": None,
+    "double_double":     None,
+    "triple_double":     None,
+
+    # ----- MLB short-form -----
+    "strikeouts":        "pitcher_strikeouts",
+    "hits":              "batter_hits",
+    "total_bases":       "batter_total_bases",
+    "home_runs":         "batter_home_runs",
+    "rbis":              "batter_rbis",
+    # ----- NHL short-form -----
+    "goals":             "player_goals",
+    "shots_on_goal":     "player_shots_on_goal",
+    # ----- Soccer short-form -----
+    "shots":             "player_shots",
+    "shots_on_target":   "player_shots_on_target",
+}
+
+UD_SPORT_MAP = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "SOCCER": "SOCCER", "FIFA": "SOCCER"}
+
+
+# ============================================================================
+# Apify client helpers
+# ============================================================================
 
 def _token() -> str:
     tok = _SECRETS.get("APIFY_API_TOKEN") or os.environ.get("APIFY_API_TOKEN")
@@ -61,12 +128,12 @@ def _token() -> str:
     return tok
 
 
-def _run_actor(actor: str, leagues: list[str]) -> list[dict]:
-    """Trigger an Apify actor, block until done, return dataset items."""
+def _run_actor(actor: str, run_input: dict) -> list[dict]:
+    """Trigger an Apify actor with a custom input dict, return dataset items."""
     from apify_client import ApifyClient
 
     client = ApifyClient(token=_token())
-    run = client.actor(actor).call(run_input={"leagues": leagues})
+    run = client.actor(actor).call(run_input=run_input)
     if not run or run.get("status") != "SUCCEEDED":
         status = run.get("status") if run else "unknown"
         raise RuntimeError(f"Apify actor finished with status={status}")
@@ -76,9 +143,9 @@ def _run_actor(actor: str, leagues: list[str]) -> list[dict]:
     return list(client.dataset(dataset_id).iterate_items())
 
 
-# ----------------------------------------------------------------------------
-# Parsers — translate Apify items → dfs_lines rows
-# ----------------------------------------------------------------------------
+# ============================================================================
+# PrizePicks parser (unchanged from original)
+# ============================================================================
 
 def _parse_pp_items(items: list[dict]) -> tuple[list[dict], dict]:
     counters = {
@@ -125,85 +192,99 @@ def _parse_pp_items(items: list[dict]) -> tuple[list[dict], dict]:
         if not player or line is None:
             continue
 
-        rows.append(
-            {
-                "platform": "prizepicks",
-                "sport": sport,
-                "player": player,
-                "market": market,
-                "line": float(line),
-                "odds_tier": (it.get("odds_type") or "standard").lower(),
-                "projection_id": str(it.get("projection_id") or it.get("id") or ""),
-                "start_time": it.get("start_time"),
-                "home_team": it.get("home_team"),
-                "away_team": it.get("away_team"),
-                "fetched_at": now_iso,
-            }
-        )
+        rows.append({
+            "platform": "prizepicks",
+            "sport": sport,
+            "player": player,
+            "market": market,
+            "line": float(line),
+            "odds_tier": (it.get("odds_type") or "standard").lower(),
+            "projection_id": str(it.get("projection_id") or it.get("id") or ""),
+            "start_time": it.get("start_time"),
+            "home_team": it.get("home_team"),
+            "away_team": it.get("away_team"),
+            "fetched_at": now_iso,
+        })
         counters["lines_added"] += 1
 
     return rows, counters
 
+
+# ============================================================================
+# Underdog parser — new actor's schema (brilliant_gum/sports-props-aggregator)
+# ============================================================================
 
 def _parse_ud_items(items: list[dict]) -> tuple[list[dict], dict]:
     counters = {
         "total_items": len(items),
         "lines_added": 0,
         "skipped_live": 0,
-        "skipped_unknown_stat": 0,
-        "skipped_unknown_league": 0,
+        "skipped_no_sportsbook_equivalent": 0,  # propType has no sharp consensus to compare
+        "skipped_unknown_proptype": 0,
+        "skipped_unknown_sport": 0,
     }
     now_iso = datetime.now(timezone.utc).isoformat()
     rows: list[dict] = []
 
     for it in items:
-        if it.get("is_live"):
+        if it.get("isLive"):
             counters["skipped_live"] += 1
             continue
 
-        league = (it.get("league") or "").strip().upper()
-        sport = UD_LEAGUE_TO_SPORT.get(league)
+        sport_raw = (it.get("sport") or "").strip().upper()
+        sport = UD_SPORT_MAP.get(sport_raw)
         if not sport:
-            counters["skipped_unknown_league"] += 1
+            counters["skipped_unknown_sport"] += 1
             continue
 
-        stat = (it.get("stat") or "").strip()
-        market = UD_STAT_TO_MARKET.get(stat)
-        if not market:
-            counters["skipped_unknown_stat"] += 1
+        prop_type = (it.get("propType") or "").strip()
+        if prop_type not in UD_PROPTYPE_TO_MARKET:
+            counters["skipped_unknown_proptype"] += 1
+            continue
+        market = UD_PROPTYPE_TO_MARKET[prop_type]
+        if market is None:
+            counters["skipped_no_sportsbook_equivalent"] += 1
             continue
 
-        player = (it.get("player_name") or "").strip()
+        player = (it.get("playerName") or "").strip()
         line = it.get("line")
         if not player or line is None:
             continue
 
-        rows.append(
-            {
-                "platform": "underdog",
-                "sport": sport,
-                "player": player,
-                "market": market,
-                "line": float(line),
-                "odds_tier": (it.get("odds_type") or "standard").lower(),
-                "projection_id": str(it.get("projection_id") or it.get("id") or ""),
-                "start_time": it.get("start_time"),
-                "home_team": it.get("home_team"),
-                "away_team": it.get("away_team"),
-                "fetched_at": now_iso,
-            }
-        )
+        # Resolve home/away from `team` + `gameVenue` ("home" or "away" relative
+        # to the player's own team).
+        team = (it.get("team") or "").strip()
+        opp = (it.get("opponent") or "").strip()
+        venue = (it.get("gameVenue") or "").strip().lower()
+        if venue == "home":
+            home_team, away_team = team, opp
+        else:  # "away" or unknown — default to player team being away
+            home_team, away_team = opp, team
+
+        rows.append({
+            "platform": "underdog",
+            "sport": sport,
+            "player": player,
+            "market": market,
+            "line": float(line),
+            "odds_tier": "standard",   # this actor doesn't tier; treat all as standard
+            "projection_id": str(it.get("appearanceId") or ""),
+            "start_time": it.get("gameTime"),
+            "home_team": home_team,
+            "away_team": away_team,
+            "fetched_at": now_iso,
+        })
         counters["lines_added"] += 1
 
     return rows, counters
 
 
-# ----------------------------------------------------------------------------
+# ============================================================================
 # Public refresh entrypoints — called by Streamlit buttons
-# ----------------------------------------------------------------------------
+# ============================================================================
 
 def refresh_prizepicks() -> dict:
-    items = _run_actor(PP_ACTOR, PP_APIFY_LEAGUES)
+    items = _run_actor(PP_ACTOR, {"leagues": PP_APIFY_LEAGUES})
     rows, counters = _parse_pp_items(items)
     db.replace_platform_dfs_lines("prizepicks", rows)
     db.set_meta("last_pp_refresh", datetime.now(timezone.utc).isoformat())
@@ -211,7 +292,12 @@ def refresh_prizepicks() -> dict:
 
 
 def refresh_underdog() -> dict:
-    items = _run_actor(UD_ACTOR, UD_APIFY_LEAGUES)
+    items = _run_actor(UD_ACTOR, {
+        "platforms": ["underdog"],
+        "sports": UD_APIFY_SPORTS,
+        "onlyLiveGames": False,
+        "includeInjuredPlayers": False,
+    })
     rows, counters = _parse_ud_items(items)
     db.replace_platform_dfs_lines("underdog", rows)
     db.set_meta("last_ud_refresh", datetime.now(timezone.utc).isoformat())
@@ -230,6 +316,8 @@ def ingest_dump(platform: str, items: list[dict]) -> dict:
     else:
         raise ValueError(f"Unknown platform: {platform}")
     db.replace_platform_dfs_lines(platform, rows)
-    db.set_meta(f"last_{'pp' if platform == 'prizepicks' else 'ud'}_refresh",
-                datetime.now(timezone.utc).isoformat())
+    db.set_meta(
+        f"last_{'pp' if platform == 'prizepicks' else 'ud'}_refresh",
+        datetime.now(timezone.utc).isoformat(),
+    )
     return counters
