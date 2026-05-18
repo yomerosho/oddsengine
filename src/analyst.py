@@ -42,15 +42,22 @@ def build_user_message(
 ) -> str:
     """The user-facing prompt the LLM sees alongside the system prompt.
 
-    `platform_focus` ∈ {'prizepicks', 'underdog', 'both'}.
+    `sport`           — sport label or "ALL" for cross-sport mode.
+    `platform_focus`  ∈ {'prizepicks', 'underdog', 'both'}.
     """
+    is_cross_sport = sport.upper() == "ALL"
+
     pp_anchors = dashboard.get("pp_anchors", [])
     ud_anchors = dashboard.get("ud_anchors", [])
     props = dashboard.get("props", [])
 
-    # Trim to a manageable context size — only top props by absolute EV.
+    # Trim to a manageable context size — top props by absolute EV.
+    # On cross-sport nights we cap higher since there's more legitimate ground
+    # to cover, but still bounded to keep prompt cost predictable.
+    cap = 120 if is_cross_sport else 60
     top_props = [
         {
+            "sport": p.get("sport"),
             "player": p["player"],
             "market": p["market"],
             "line": p["line"],
@@ -63,16 +70,19 @@ def build_user_message(
             "best_under": p["best_under"],
             "books_count": p["books_count"],
         }
-        for p in props[:60]  # cap context burn
+        for p in props[:cap]
     ]
 
-    # Only include the platforms the user wants today.
     pp_block = pp_anchors if platform_focus in ("prizepicks", "both") else []
     ud_block = ud_anchors if platform_focus in ("underdog", "both") else []
+
+    # Compute which sports actually have edges in this payload (for headline).
+    sports_in_payload = sorted({p.get("sport") for p in top_props if p.get("sport")})
 
     payload = {
         "today": datetime.now(timezone.utc).date().isoformat(),
         "sport": sport,
+        "sports_in_payload": sports_in_payload,
         "bankroll_usd": bankroll,
         "platform_focus": platform_focus,
         "sportsbook_consensus_props": top_props,
@@ -80,13 +90,32 @@ def build_user_message(
         "underdog_lines_with_consensus": ud_block,
     }
 
+    if is_cross_sport:
+        headline = (
+            f"You are analyzing today's CROSS-SPORT slate. The data spans "
+            f"{', '.join(sports_in_payload) if sports_in_payload else 'no sports yet'}. "
+            f"Find the highest-edge slip mix across sports — uncorrelated legs "
+            f"from different sports are preferred when edges are comparable."
+        )
+        rules_extra = (
+            "- Cross-sport cap: max 4 legs from any single sport on this slip\n"
+            "- Same-game cap still applies WITHIN each sport (max 3, max 2 on 4+ leg slips)\n"
+            "- Each leg in your output must state the SPORT explicitly\n"
+        )
+    else:
+        headline = f"You are analyzing today's {sport} slate for the user."
+        rules_extra = (
+            "- Avoid more than 3 legs from the same game (correlation cap)\n"
+            "- Apply the sport-specific risks from the loaded sport skill\n"
+        )
+
     instruction = f"""\
-You are analyzing today's {sport} slate for the user.
+{headline}
 
 The data below contains:
 1. **sportsbook_consensus_props** — sportsbook player props, with no-vig consensus
    probabilities computed across all available books. Treat consensus_p as the
-   true fair probability.
+   true fair probability. Each prop is tagged with its `sport`.
 2. **prizepicks_lines_with_consensus** / **underdog_lines_with_consensus** —
    DFS pick'em lines from each platform, joined to the closest sportsbook line.
    `exact_line_match: false` means the sportsbook line differs from the DFS
@@ -96,20 +125,19 @@ Your task:
 - Identify the best Over/Under picks on {platform_focus} for today.
 - Apply the user's slip-sizing rules from USER.md (stake caps by leg count).
 - Each leg must have edge ≥ 4% vs. consensus (USER.md hard rule).
-- Avoid more than 2 legs from the same game (correlation cap).
-- Note any back-to-back fatigue or other situational risks per the sport skill.
-- If no leg clears the edge threshold, explicitly say "pass" — don't force action.
+{rules_extra}- If no leg clears the edge threshold, explicitly say "pass" — don't force action.
 
 Output format (per SOUL.md):
 For each recommended leg, give:
-  • The bet (player, market, line, side, platform)
+  • The bet (sport, player, market, line, side, platform)
   • Implied probability vs. assessed probability
   • Edge %
   • Confidence (Low/Medium/High) + reasoning
   • Key drivers (2-4 bullets)
   • Risk factors
 Then propose 1-2 slip constructions with: leg count, total stake (in $),
-expected hit probability, slip EV %. Bold the recommended slip.
+expected hit probability, slip EV %. Bold the recommended slip. For
+cross-sport slips, show the sport mix (e.g. "2 NBA + 2 MLB").
 
 Data:
 ```json
@@ -162,7 +190,19 @@ def analyze(
 
     Returns: {model, response, system_prompt, user_prompt, analysis_id}.
     """
-    system = skill_loader.build_system_prompt(sport)
+    # Determine which sport skills to load. In ALL mode, load only the ones
+    # that actually have edges in the payload — saves tokens, keeps Yomero
+    # focused on actionable knowledge.
+    if sport.upper() == "ALL":
+        sports_with_data = sorted({
+            p.get("sport") for p in dashboard.get("props", [])
+            if p.get("sport")
+        })
+        skill_sports = sports_with_data if sports_with_data else ["NBA"]
+    else:
+        skill_sports = [sport]
+
+    system = skill_loader.build_system_prompt(skill_sports)
     user = build_user_message(sport, dashboard, bankroll, platform_focus)
 
     provider = (_cfg("LLM_PROVIDER", "anthropic") or "anthropic").lower()
