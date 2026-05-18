@@ -77,6 +77,48 @@ def replace_platform_dfs_lines(platform: str, rows: list[dict]) -> None:
             db().table("dfs_lines").insert(rows[i : i + chunk]).execute()
 
 
+def delete_stale_matches(sport: str, cutoff_iso: str) -> int:
+    """Delete matches whose commence_time is older than cutoff.
+
+    Returns count of deleted rows. The `odds` table has ON DELETE CASCADE
+    on its FK to matches.id, so removing a match also removes its odds.
+    Called at the start of refresh_sport() so finished games don't linger
+    in the dashboard.
+    """
+    res = (
+        db()
+        .table("matches")
+        .delete()
+        .eq("sport", sport)
+        .lt("commence_time", cutoff_iso)
+        .execute()
+    )
+    return len(res.data) if res.data else 0
+
+
+def delete_stale_dfs_lines(sport: str, cutoff_iso: str) -> int:
+    """Delete PP/UD lines whose start_time is older than cutoff.
+
+    DFS line tables (`dfs_lines`) don't cascade off matches because PP/UD
+    have their own game records — same player×market on the same night,
+    but a separate row keyed by `appearanceId` or `projection_id`. Stale
+    PP/UD lines accumulate if the user hasn't clicked PrizePicks/Underdog
+    in a while, so we sweep them whenever they refresh sportsbook odds.
+
+    NOTE: this filters by sport, so it only cleans the sport currently
+    being refreshed. Other sports stay untouched.
+    """
+    res = (
+        db()
+        .table("dfs_lines")
+        .delete()
+        .eq("sport", sport)
+        .lt("start_time", cutoff_iso)
+        .execute()
+    )
+    return len(res.data) if res.data else 0
+
+
 def set_meta(key: str, value: str) -> None:
     db().table("meta").upsert(
         {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
