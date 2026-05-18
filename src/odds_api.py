@@ -118,14 +118,27 @@ def refresh_sport(sport_label: str, max_events: int = 3) -> dict:
     pair costs 1 credit, so NBA with 8 prop markets × 3 events = 24 credits per
     refresh. With 500 credits/month, that's ~20 NBA refreshes/month — budget
     accordingly.
+
+    Before fetching, this also purges games whose commence_time is in the past
+    (with a 4-hour grace window so live/just-finished games stay viewable).
+    Without this, finished games linger in the dashboard forever — the API
+    only returns *upcoming* games, but our DB never forgets them.
     """
     cfg = SPORTS[sport_label]
     keys = cfg["keys"]
     markets = cfg["prop_markets"]
     markets_csv = ",".join(markets)
     markets_set = set(markets)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    cutoff = datetime.now(timezone.utc) + timedelta(hours=48)
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    cutoff = now + timedelta(hours=48)
+    stale_cutoff = (now - timedelta(hours=4)).isoformat()
+
+    # Purge stale games before pulling. Cascade FK on odds table cleans those too.
+    purged = db.delete_stale_matches(sport_label, stale_cutoff)
+    # Also clean stale PP/UD lines for this sport — they don't FK-cascade off matches
+    # because DFS platforms have their own appearance/projection IDs.
+    purged_dfs = db.delete_stale_dfs_lines(sport_label, stale_cutoff)
 
     games_added, props_added, errors = 0, 0, []
     quota: str | None = None
@@ -203,6 +216,8 @@ def refresh_sport(sport_label: str, max_events: int = 3) -> dict:
         "leagues_fetched": keys,
         "games": games_added,
         "props_added": props_added,
+        "stale_purged": purged,
+        "stale_dfs_purged": purged_dfs,
         "quota_remaining": quota,
         "errors": errors,
     }
