@@ -127,9 +127,17 @@ with st.sidebar:
     st.markdown('<hr class="rule">', unsafe_allow_html=True)
 
     st.markdown("##### Filters")
-    sport = st.selectbox("Sport", ["NBA", "MLB", "NHL", "SOCCER"], index=0)
+    sport = st.selectbox("Sport", ["All", "NBA", "MLB", "NHL", "SOCCER"], index=0,
+                         help="'All' pulls cross-sport — the analyst can mix legs across leagues.")
 
-    sport_markets = odds_api.SPORTS[sport]["prop_markets"]
+    # In ALL mode, the market list is the union of every sport's markets.
+    if sport == "All":
+        sport_markets = sorted(set().union(*[
+            odds_api.SPORTS[s]["prop_markets"] for s in odds_api.SPORTS
+        ]))
+    else:
+        sport_markets = odds_api.SPORTS[sport]["prop_markets"]
+
     market_filter = st.multiselect(
         "Markets",
         options=sport_markets,
@@ -173,23 +181,51 @@ with st.sidebar:
     st.markdown('<hr class="rule">', unsafe_allow_html=True)
 
     st.markdown("##### Refresh data")
-    if st.button(f"Pull {sport} odds", use_container_width=True,
-                 help="1 credit per (event × market) — default cap 3 events. Also purges finished games + stale DFS lines."):
-        with st.spinner(f"Pulling {sport} via The Odds API..."):
-            try:
-                r = odds_api.refresh_sport(sport, max_events=3)
+    if sport == "All":
+        # ALL mode — loop through every sport. Each one costs credits independently.
+        if st.button("Pull ALL sports odds", use_container_width=True,
+                     help="Refreshes NBA + MLB + NHL + SOCCER in sequence. ~24 credits per sport."):
+            with st.spinner("Pulling all sports..."):
+                totals = {"games": 0, "props": 0, "purged_g": 0, "purged_d": 0}
+                quota_last = None
+                errs_all: list[str] = []
+                for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+                    try:
+                        r = odds_api.refresh_sport(s, max_events=3)
+                        totals["games"]    += r["games"]
+                        totals["props"]    += r["props_added"]
+                        totals["purged_g"] += r.get("stale_purged", 0)
+                        totals["purged_d"] += r.get("stale_dfs_purged", 0)
+                        quota_last = r["quota_remaining"]
+                        for e in r["errors"]:
+                            errs_all.append(f"{s}: {e}")
+                    except Exception as e:
+                        errs_all.append(f"{s}: {e}")
                 clear_data_caches()
-                bits = []
-                if r.get('stale_purged'):
-                    bits.append(f"{r['stale_purged']} games")
-                if r.get('stale_dfs_purged'):
-                    bits.append(f"{r['stale_dfs_purged']} DFS")
-                purged_msg = f" · purged {' + '.join(bits)} stale" if bits else ""
-                st.success(f"{r['games']} games · {r['props_added']} rows{purged_msg} · quota {r['quota_remaining']}")
-                if r["errors"]:
-                    st.warning("\n".join(r["errors"]))
-            except Exception as e:
-                st.error(str(e))
+                st.success(
+                    f"All sports · {totals['games']} games · {totals['props']} rows · "
+                    f"purged {totals['purged_g']}g + {totals['purged_d']}d · quota {quota_last}"
+                )
+                if errs_all:
+                    st.warning("\n".join(errs_all))
+    else:
+        if st.button(f"Pull {sport} odds", use_container_width=True,
+                     help="1 credit per (event × market) — default cap 3 events. Also purges finished games + stale DFS lines."):
+            with st.spinner(f"Pulling {sport} via The Odds API..."):
+                try:
+                    r = odds_api.refresh_sport(sport, max_events=3)
+                    clear_data_caches()
+                    bits = []
+                    if r.get('stale_purged'):
+                        bits.append(f"{r['stale_purged']} games")
+                    if r.get('stale_dfs_purged'):
+                        bits.append(f"{r['stale_dfs_purged']} DFS")
+                    purged_msg = f" · purged {' + '.join(bits)} stale" if bits else ""
+                    st.success(f"{r['games']} games · {r['props_added']} rows{purged_msg} · quota {r['quota_remaining']}")
+                    if r["errors"]:
+                        st.warning("\n".join(r["errors"]))
+                except Exception as e:
+                    st.error(str(e))
 
     c1, c2 = st.columns(2)
     if c1.button("PrizePicks", use_container_width=True, help="Apify actor, 30-90s."):
@@ -213,7 +249,13 @@ with st.sidebar:
     meta = meta_bundle()
     quota = meta.get("quota_remaining") or "?"
     st.markdown(f"**Quota** `{quota}`")
-    if meta.get(f"last_refresh_{sport}"):
+    if sport == "All":
+        # Show each sport's last refresh in compact form
+        for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+            v = meta.get(f"last_refresh_{s}")
+            if v:
+                st.caption(f"{s} odds · {v[:16].replace('T',' ')} UTC")
+    elif meta.get(f"last_refresh_{sport}"):
         st.caption(f"{sport} odds · {meta[f'last_refresh_{sport}'][:16].replace('T',' ')} UTC")
     if meta.get("last_pp_refresh"):
         st.caption(f"PP · {meta['last_pp_refresh'][:16].replace('T',' ')} UTC")
@@ -243,16 +285,25 @@ with st.sidebar:
 # Build dashboard once per render — passed to each page
 # ============================================================================
 
-matches_df = cached_matches(sport)
-odds_df = cached_odds(sport)
-pp_df = cached_dfs("prizepicks", sport) if "prizepicks" in platform_filter else pd.DataFrame()
-ud_df = cached_dfs("underdog", sport) if "underdog" in platform_filter else pd.DataFrame()
+# 'All' → None at the DB layer (no sport filter, full cross-sport pull).
+sport_filter = None if sport == "All" else sport
+
+matches_df = cached_matches(sport_filter)
+odds_df = cached_odds(sport_filter)
+pp_df = cached_dfs("prizepicks", sport_filter) if "prizepicks" in platform_filter else pd.DataFrame()
+ud_df = cached_dfs("underdog", sport_filter) if "underdog" in platform_filter else pd.DataFrame()
 
 dashboard = ev.build_dashboard(
     matches=matches_df, odds=odds_df,
     pp_lines=pp_df, ud_lines=ud_df,
     meta=meta_bundle(),
 )
+
+
+def _ev_or_neg_inf(v):
+    """One-sided props can have a None EV for the missing side. Treat None
+    as -inf for filter/max comparisons so it never wins."""
+    return v if v is not None else float("-inf")
 
 
 def apply_filters(props: list[dict]) -> list[dict]:
@@ -262,7 +313,8 @@ def apply_filters(props: list[dict]) -> list[dict]:
             continue
         if p["books_count"] < min_books:
             continue
-        if max(p["ev_over_pct"], p["ev_under_pct"]) < min_edge:
+        best_ev = max(_ev_or_neg_inf(p["ev_over_pct"]), _ev_or_neg_inf(p["ev_under_pct"]))
+        if best_ev < min_edge:
             continue
         out.append(p)
     return out
@@ -325,7 +377,8 @@ def pretty_market(m: str) -> str:
 # ============================================================================
 
 if page == "Slate":
-    st.markdown(f"### {sport} slate · {datetime.now(timezone.utc).date().isoformat()}")
+    title_prefix = "Cross-sport" if sport == "All" else sport
+    st.markdown(f"### {title_prefix} slate · {datetime.now(timezone.utc).date().isoformat()}")
     st.caption("Filters apply across all pages. Set them once in the sidebar.")
 
     m = dashboard["meta"]
@@ -334,7 +387,7 @@ if page == "Slate":
     c2.metric("Props cached", m["total_props"])
     c3.metric(f"Value bets ≥ {min_edge:g}%", sum(
         1 for p in filtered_props
-        if max(p["ev_over_pct"], p["ev_under_pct"]) >= min_edge
+        if max(_ev_or_neg_inf(p["ev_over_pct"]), _ev_or_neg_inf(p["ev_under_pct"])) >= min_edge
     ))
     c4.metric("PP lines", m["total_pp_lines"], delta=f"{m['total_pp_anchors']} anchored")
     c5.metric("UD lines", m["total_ud_lines"], delta=f"{m['total_ud_anchors']} anchored")
@@ -348,15 +401,21 @@ if page == "Slate":
         st.markdown("#### Top edges, this slate")
         chart_rows = []
         for p in filtered_props:
-            if p["ev_over_pct"] >= p["ev_under_pct"]:
+            tag = f"[{p.get('sport','?')}] " if sport == "All" else ""
+            ev_o = _ev_or_neg_inf(p["ev_over_pct"])
+            ev_u = _ev_or_neg_inf(p["ev_under_pct"])
+            # Pick the available side; if both are None (shouldn't happen but guard), skip.
+            if ev_o == float("-inf") and ev_u == float("-inf"):
+                continue
+            if ev_o >= ev_u:
                 chart_rows.append({
-                    "label": f"{p['player']} {pretty_market(p['market'])} O{p['line']}",
+                    "label": f"{tag}{p['player']} {pretty_market(p['market'])} O{p['line']}",
                     "ev": p["ev_over_pct"],
                     "books": p["books_count"],
                 })
             else:
                 chart_rows.append({
-                    "label": f"{p['player']} {pretty_market(p['market'])} U{p['line']}",
+                    "label": f"{tag}{p['player']} {pretty_market(p['market'])} U{p['line']}",
                     "ev": p["ev_under_pct"],
                     "books": p["books_count"],
                 })
@@ -374,7 +433,7 @@ if page == "Slate":
                 customdata=tdf["books"],
             ))
             fig.update_layout(
-                title=dict(text=f"Top 15 by EV · {sport}", x=0.0, font=dict(size=14)),
+                title=dict(text=f"Top 15 by EV · {'Cross-sport' if sport == 'All' else sport}", x=0.0, font=dict(size=14)),
                 xaxis_title="EV %",
                 yaxis=dict(autorange="reversed"),
             )
@@ -385,8 +444,10 @@ if page == "Slate":
         st.markdown("#### EV distribution")
         all_ev = []
         for p in filtered_props:
-            all_ev.append(p["ev_over_pct"])
-            all_ev.append(p["ev_under_pct"])
+            if p["ev_over_pct"] is not None:
+                all_ev.append(p["ev_over_pct"])
+            if p["ev_under_pct"] is not None:
+                all_ev.append(p["ev_under_pct"])
         if all_ev:
             fig = px.histogram(x=all_ev, nbins=40, color_discrete_sequence=[PALETTE["accent"]])
             fig.add_vline(x=min_edge, line_dash="dash", line_color=PALETTE["pos"],
@@ -405,22 +466,29 @@ if page == "Slate":
 # ============================================================================
 
 elif page == "Sportsbook EV":
-    st.markdown(f"### {sport} · sportsbook EV table")
+    title_prefix = "Cross-sport" if sport == "All" else sport
+    st.markdown(f"### {title_prefix} · sportsbook EV table")
     st.caption(f"Showing props where the best side EV ≥ {min_edge:g}% and books ≥ {min_books}.")
 
     if not filtered_props:
         st.info("Nothing meets the filters. Relax min edge, or refresh data.")
     else:
         df = pd.DataFrame(filtered_props)
-        df["Best Over"]  = df["best_over"].apply(lambda x: f"{x['american']:+d} {x['book']}")
-        df["Best Under"] = df["best_under"].apply(lambda x: f"{x['american']:+d} {x['book']}")
+        df["Best Over"]  = df["best_over"].apply(
+            lambda x: f"{x['american']:+d} {x['book']}" if x else "—"
+        )
+        df["Best Under"] = df["best_under"].apply(
+            lambda x: f"{x['american']:+d} {x['book']}" if x else "—"
+        )
         df["Market"] = df["market"].apply(pretty_market)
-        display = df[[
+        cols = (["sport"] if sport == "All" else []) + [
             "player", "Market", "line", "game",
             "ev_over_pct", "ev_under_pct",
             "consensus_p_over", "consensus_p_under",
             "Best Over", "Best Under", "books_count",
-        ]].rename(columns={
+        ]
+        display = df[cols].rename(columns={
+            "sport": "Sport",
             "player": "Player",
             "line": "Line",
             "game": "Game",
@@ -455,13 +523,16 @@ elif page == "Sportsbook EV":
 # ============================================================================
 
 elif page == "DFS line-shop":
-    st.markdown(f"### {sport} · DFS line-shop")
+    title_prefix = "Cross-sport" if sport == "All" else sport
+    st.markdown(f"### {title_prefix} · DFS line-shop")
     st.caption("Each row = a player×market where PP and/or UD has a line. Pick the platform with the better implied edge.")
 
     pp = [a for a in dashboard["pp_anchors"]
-          if a["sport"] == sport and (not market_filter or a["market"] in market_filter)]
+          if (sport == "All" or a["sport"] == sport)
+          and (not market_filter or a["market"] in market_filter)]
     ud = [a for a in dashboard["ud_anchors"]
-          if a["sport"] == sport and (not market_filter or a["market"] in market_filter)]
+          if (sport == "All" or a["sport"] == sport)
+          and (not market_filter or a["market"] in market_filter)]
 
     if not pp and not ud:
         st.info("No DFS lines anchored. Refresh PrizePicks or Underdog from the sidebar.")
@@ -509,10 +580,18 @@ elif page == "DFS line-shop":
 
 elif page == "Yomero analyst":
     st.markdown("### 🧠 Yomero")
-    st.caption(
-        f"Primed with SOUL.md + USER.md + AGENTS.md + skills/{sport.lower()}.md. "
-        "Data passed: filtered props above + PP/UD anchors."
-    )
+    if sport == "All":
+        sports_loaded = sorted({p.get("sport") for p in filtered_props if p.get("sport")})
+        skill_str = " + ".join(f"skills/{s.lower()}.md" for s in sports_loaded) or "skills/nba.md"
+        st.caption(
+            f"Primed with SOUL.md + USER.md + AGENTS.md + {skill_str}. "
+            f"Cross-sport mode — Yomero can mix legs across leagues."
+        )
+    else:
+        st.caption(
+            f"Primed with SOUL.md + USER.md + AGENTS.md + skills/{sport.lower()}.md. "
+            "Data passed: filtered props above + PP/UD anchors."
+        )
 
     c1, c2 = st.columns([1, 3])
     with c1:
@@ -535,14 +614,16 @@ elif page == "Yomero analyst":
                 **dashboard,
                 "props": filtered_props,
                 "pp_anchors": [a for a in dashboard["pp_anchors"]
-                               if a["sport"] == sport and a["market"] in market_filter],
+                               if (sport == "All" or a["sport"] == sport)
+                               and a["market"] in market_filter],
                 "ud_anchors": [a for a in dashboard["ud_anchors"]
-                               if a["sport"] == sport and a["market"] in market_filter],
+                               if (sport == "All" or a["sport"] == sport)
+                               and a["market"] in market_filter],
             }
             with st.spinner("Yomero is reading the slate..."):
                 try:
                     result = analyst.analyze(
-                        sport=sport,
+                        sport="ALL" if sport == "All" else sport,
                         dashboard=trimmed,
                         bankroll=bankroll,
                         platform_focus=platform_focus,
@@ -580,7 +661,7 @@ elif page == "Slip builder":
         # Build candidate list (one entry per (prop, side) clearing the edge floor).
         candidates: list[dict] = []
         for p in filtered_props:
-            if p["ev_over_pct"] >= min_edge:
+            if p["ev_over_pct"] is not None and p["ev_over_pct"] >= min_edge:
                 candidates.append({
                     "key":      f"{p['event_id']}|{p['market']}|{p['player']}|{p['line']}|Over",
                     "label":    f"{p['player']} · {pretty_market(p['market'])} O{p['line']} "
@@ -590,7 +671,7 @@ elif page == "Slip builder":
                     "p":        p["consensus_p_over"],
                     "edge_pct": p["ev_over_pct"],
                 })
-            if p["ev_under_pct"] >= min_edge:
+            if p["ev_under_pct"] is not None and p["ev_under_pct"] >= min_edge:
                 candidates.append({
                     "key":      f"{p['event_id']}|{p['market']}|{p['player']}|{p['line']}|Under",
                     "label":    f"{p['player']} · {pretty_market(p['market'])} U{p['line']} "
