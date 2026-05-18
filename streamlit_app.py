@@ -68,42 +68,12 @@ st.markdown(
         background: linear-gradient(90deg, transparent, {PALETTE['neutral']}55, transparent);
         margin: 1.2rem 0;
     }}
-    
 
     [data-testid="stSidebar"] {{ border-right: 1px solid #1f2937; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-# ============================================================================
-# Password gate (public Streamlit app, private access)
-# ============================================================================
-
-def _check_password() -> bool:
-    """Returns True if the user has entered the right password.
-
-    Stored in session state so the gate only shows once per session.
-    Password lives in secrets (APP_PASSWORD) and is never logged.
-    """
-    if st.session_state.get("password_ok"):
-        return True
-
-    st.markdown("# ◎ OddsEngine")
-    st.caption("Private access — enter password to continue.")
-    pw = st.text_input("Password", type="password", label_visibility="collapsed",
-                       placeholder="Password")
-    if pw:
-        expected = st.secrets.get("APP_PASSWORD", "")
-        if expected and pw == expected:
-            st.session_state["password_ok"] = True
-            st.rerun()
-        else:
-            st.error("Wrong password.")
-    st.stop()
-
-
-_check_password()
 
 
 # ============================================================================
@@ -204,12 +174,18 @@ with st.sidebar:
 
     st.markdown("##### Refresh data")
     if st.button(f"Pull {sport} odds", use_container_width=True,
-                 help="1 credit per (event × market) — default cap 3 events."):
+                 help="1 credit per (event × market) — default cap 3 events. Also purges finished games + stale DFS lines."):
         with st.spinner(f"Pulling {sport} via The Odds API..."):
             try:
                 r = odds_api.refresh_sport(sport, max_events=3)
                 clear_data_caches()
-                st.success(f"{r['games']} games · {r['props_added']} rows · quota {r['quota_remaining']}")
+                bits = []
+                if r.get('stale_purged'):
+                    bits.append(f"{r['stale_purged']} games")
+                if r.get('stale_dfs_purged'):
+                    bits.append(f"{r['stale_dfs_purged']} DFS")
+                purged_msg = f" · purged {' + '.join(bits)} stale" if bits else ""
+                st.success(f"{r['games']} games · {r['props_added']} rows{purged_msg} · quota {r['quota_remaining']}")
                 if r["errors"]:
                     st.warning("\n".join(r["errors"]))
             except Exception as e:
@@ -243,6 +219,24 @@ with st.sidebar:
         st.caption(f"PP · {meta['last_pp_refresh'][:16].replace('T',' ')} UTC")
     if meta.get("last_ud_refresh"):
         st.caption(f"UD · {meta['last_ud_refresh'][:16].replace('T',' ')} UTC")
+
+    # Optional global cleanup — wipes stale data across ALL sports in one shot.
+    # Lives in an expander so it's out of the way during normal use.
+    with st.expander("Maintenance", expanded=False):
+        st.caption("Cleans up finished games and stale DFS lines for every sport. "
+                   "Safe to run anytime; no API calls.")
+        if st.button("Purge stale data (all sports)", use_container_width=True):
+            from datetime import datetime, timedelta, timezone
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+            totals = {"matches": 0, "dfs": 0}
+            for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+                try:
+                    totals["matches"] += db.delete_stale_matches(s, cutoff)
+                    totals["dfs"]     += db.delete_stale_dfs_lines(s, cutoff)
+                except Exception as e:
+                    st.warning(f"{s}: {e}")
+            clear_data_caches()
+            st.success(f"Purged {totals['matches']} stale games · {totals['dfs']} stale DFS lines")
 
 
 # ============================================================================
