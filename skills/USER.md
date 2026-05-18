@@ -146,7 +146,17 @@ Most Texans bet via:
   - 6-leg slips: max 0.25% of bankroll ($0.25 — 
     lottery tier only)
 - Every leg must have ≥ 4% projected edge vs. sharp market
-- No more than 2 legs from the same game (correlation cap)
+- Same-game cap: max 3 legs from the same game on a 
+  2-3 leg slip; max 2 legs from the same game on 
+  4-leg+ slips. Correlation awareness — avoid stacking 
+  legs that resolve on the same game script (e.g. all 
+  three legs being "overs" on a pace bet, both sides 
+  of a combo prop on the same player, etc.)
+- On thin slates (1-2 games available), the same-game 
+  cap may bind. In that case, the analyst should 
+  clearly flag the correlation risk, downgrade 
+  confidence one tier, and let the user accept the 
+  trade-off rather than skipping the play entirely.
 - No more than 1 leg per player across active slips
 - Always check projections within 1 hour of lock 
   (lines update as injury news breaks)
