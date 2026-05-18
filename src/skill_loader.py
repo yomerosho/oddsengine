@@ -44,14 +44,46 @@ def load_sport_skill(sport: str) -> str:
     return load(fname) if fname else ""
 
 
-def build_system_prompt(sport: str) -> str:
-    """Concatenate SOUL + USER + AGENTS + sport skill into one system prompt."""
+def build_system_prompt(sport: str | list[str]) -> str:
+    """Concatenate SOUL + USER + AGENTS + sport skill(s) into one system prompt.
+
+    Accepts either:
+      - a single sport string (e.g. "NBA") → loads one sport skill
+      - a list of sport strings (e.g. ["NBA", "MLB"]) → loads each in order
+    For cross-sport mode, pass only the sports that actually have edges so
+    Yomero isn't filling its context with NHL knowledge during an NBA+MLB night.
+    """
+    if isinstance(sport, str):
+        sports = [sport]
+    else:
+        sports = list(sport)
+
     sections = [
         ("# CORE IDENTITY (SOUL.md)", load("SOUL.md")),
         ("# USER PROFILE (USER.md)", load("USER.md")),
         ("# OPERATING RULES (AGENTS.md)", load("AGENTS.md")),
-        (f"# SPORT KNOWLEDGE ({sport.upper()})", load_sport_skill(sport)),
     ]
+    for s in sports:
+        body = load_sport_skill(s)
+        if body.strip():
+            sections.append((f"# SPORT KNOWLEDGE ({s.upper()})", body))
+
+    if len(sports) > 1:
+        sections.append((
+            "# CROSS-SPORT MODE",
+            "You are analyzing player props ACROSS MULTIPLE SPORTS tonight. The "
+            "data payload includes edges from each sport above. Slate-night "
+            "correlation across sports is naturally low — an NBA game's result "
+            "does not drive an MLB result. Per USER.md, the cross-sport cap is "
+            "max 4 legs from any single sport on a multi-sport slip.\n\n"
+            "When building slips:\n"
+            "- Look for the highest-edge legs regardless of sport\n"
+            "- Prefer cross-sport mixing when edges are comparable, since "
+            "uncorrelated legs improve risk-adjusted return\n"
+            "- Still respect the same-game cap within each sport\n"
+            "- Be explicit about which sport each leg comes from in the output"
+        ))
+
     return "\n\n".join(f"{header}\n\n{body}" for header, body in sections if body.strip())
 
 
