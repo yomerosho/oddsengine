@@ -83,23 +83,49 @@ def build_dashboard(
                 "american": int(row["price_american"]),
             }
 
-        # No-vig per book → consensus across books.
+        # ---- Consensus probability ----
+        # Primary path: TWO-SIDED no-vig. For each book that posts both Over
+        # and Under at this line, fair_p = io / (io + iu). Average across books.
+        #
+        # Fallback path: ONE-SIDED. Many soccer player props and some MLB
+        # markets (HRs, RBIs) are posted Over-only at The Odds API. Without a
+        # fallback we'd silently drop them. We use the median raw implied
+        # probability across the available books — vig is included, so it
+        # SYSTEMATICALLY OVERSTATES the true probability. Flag the prop as
+        # one_sided so the analyst can downgrade confidence.
         no_vig_overs: list[float] = []
         no_vig_unders: list[float] = []
+        raw_overs: list[float] = []   # one-sided fallback
+        raw_unders: list[float] = []
         for book, pair in book_pairs.items():
-            if "over" not in pair or "under" not in pair:
-                continue
-            io = 1 / pair["over"]["decimal"]
-            iu = 1 / pair["under"]["decimal"]
-            tot = io + iu
-            no_vig_overs.append(io / tot)
-            no_vig_unders.append(iu / tot)
+            has_over = "over" in pair
+            has_under = "under" in pair
+            if has_over and has_under:
+                io = 1 / pair["over"]["decimal"]
+                iu = 1 / pair["under"]["decimal"]
+                tot = io + iu
+                no_vig_overs.append(io / tot)
+                no_vig_unders.append(iu / tot)
+            elif has_over:
+                raw_overs.append(1 / pair["over"]["decimal"])
+            elif has_under:
+                raw_unders.append(1 / pair["under"]["decimal"])
 
-        if not no_vig_overs:
-            continue
-
-        consensus_p_over = sum(no_vig_overs) / len(no_vig_overs)
-        consensus_p_under = 1 - consensus_p_over
+        is_one_sided = False
+        if no_vig_overs:
+            consensus_p_over = sum(no_vig_overs) / len(no_vig_overs)
+            consensus_p_under = 1 - consensus_p_over
+        elif raw_overs:
+            # Median is robust to outlier books. Vig is still baked in here.
+            consensus_p_over = sorted(raw_overs)[len(raw_overs) // 2]
+            consensus_p_under = 1 - consensus_p_over
+            is_one_sided = True
+        elif raw_unders:
+            consensus_p_under = sorted(raw_unders)[len(raw_unders) // 2]
+            consensus_p_over = 1 - consensus_p_under
+            is_one_sided = True
+        else:
+            continue  # No usable price at all
 
         all_overs = [
             {"book": b, **p["over"]} for b, p in book_pairs.items() if "over" in p
@@ -107,11 +133,33 @@ def build_dashboard(
         all_unders = [
             {"book": b, **p["under"]} for b, p in book_pairs.items() if "under" in p
         ]
-        best_over = max(all_overs, key=lambda x: x["decimal"])
-        best_under = max(all_unders, key=lambda x: x["decimal"])
+        best_over = max(all_overs, key=lambda x: x["decimal"]) if all_overs else None
+        best_under = max(all_unders, key=lambda x: x["decimal"]) if all_unders else None
 
-        ev_over = consensus_p_over * (best_over["decimal"] - 1) - (1 - consensus_p_over)
-        ev_under = consensus_p_under * (best_under["decimal"] - 1) - (1 - consensus_p_under)
+        # EV only makes sense for sides where a price exists. Use sentinel
+        # values for missing sides so the dashboard table still has cells.
+        if best_over is not None:
+            ev_over = consensus_p_over * (best_over["decimal"] - 1) - (1 - consensus_p_over)
+            best_over_block = {
+                "american": best_over["american"],
+                "decimal": round(best_over["decimal"], 3),
+                "book": best_over["book"],
+            }
+            ev_over_pct = round(ev_over * 100, 2)
+        else:
+            best_over_block = None
+            ev_over_pct = None
+        if best_under is not None:
+            ev_under = consensus_p_under * (best_under["decimal"] - 1) - (1 - consensus_p_under)
+            best_under_block = {
+                "american": best_under["american"],
+                "decimal": round(best_under["decimal"], 3),
+                "book": best_under["book"],
+            }
+            ev_under_pct = round(ev_under * 100, 2)
+        else:
+            best_under_block = None
+            ev_under_pct = None
 
         props.append(
             {
@@ -124,25 +172,25 @@ def build_dashboard(
                 "player": player,
                 "market": market,
                 "line": float(line),
-                "best_over": {
-                    "american": best_over["american"],
-                    "decimal": round(best_over["decimal"], 3),
-                    "book": best_over["book"],
-                },
-                "best_under": {
-                    "american": best_under["american"],
-                    "decimal": round(best_under["decimal"], 3),
-                    "book": best_under["book"],
-                },
+                "best_over": best_over_block,
+                "best_under": best_under_block,
                 "consensus_p_over": round(consensus_p_over, 4),
                 "consensus_p_under": round(consensus_p_under, 4),
-                "ev_over_pct": round(ev_over * 100, 2),
-                "ev_under_pct": round(ev_under * 100, 2),
+                "ev_over_pct": ev_over_pct,
+                "ev_under_pct": ev_under_pct,
                 "books_count": len(book_pairs),
+                "is_one_sided": is_one_sided,
             }
         )
 
-    props.sort(key=lambda p: -max(p["ev_over_pct"], p["ev_under_pct"]))
+    def _best_ev(p: dict) -> float:
+        # Treat None (no price on a side) as -inf so it never wins the max.
+        o = p["ev_over_pct"]
+        u = p["ev_under_pct"]
+        return max(o if o is not None else float("-inf"),
+                   u if u is not None else float("-inf"))
+
+    props.sort(key=lambda p: -_best_ev(p))
 
     # DFS anchors: join PP/UD lines to the sportsbook prop with the closest line.
     props_by_pm: dict[tuple[str, str], list[dict]] = {}
@@ -159,8 +207,8 @@ def build_dashboard(
     value_bets = sum(
         1
         for p in props
-        if p["ev_over_pct"] >= VALUE_BET_EDGE_PCT
-        or p["ev_under_pct"] >= VALUE_BET_EDGE_PCT
+        if (p["ev_over_pct"] is not None and p["ev_over_pct"] >= VALUE_BET_EDGE_PCT)
+        or (p["ev_under_pct"] is not None and p["ev_under_pct"] >= VALUE_BET_EDGE_PCT)
     )
 
     return {
