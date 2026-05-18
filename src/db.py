@@ -143,13 +143,9 @@ def load_matches(sport: str | None = None) -> pd.DataFrame:
 
 
 def load_latest_odds(sport: str | None = None) -> pd.DataFrame:
-    """Pull from v_latest_odds view, optionally filtered by sport (via matches join).
-
-    Uses pagination since v_latest_odds can easily exceed 1000 rows when
-    several sports have odds cached (NBA: ~244 props × 5+ books × 2 sides).
-    """
+    """Pull from v_latest_odds view, optionally filtered by sport (via matches join)."""
     # supabase-py doesn't support joins; do it client-side.
-    odds_df = pd.DataFrame(_fetch_all("v_latest_odds"))
+    odds_df = pd.DataFrame(db().table("v_latest_odds").select("*").execute().data)
     if sport and not odds_df.empty:
         matches_df = load_matches(sport=sport)
         if matches_df.empty:
@@ -158,40 +154,13 @@ def load_latest_odds(sport: str | None = None) -> pd.DataFrame:
     return odds_df
 
 
-def _fetch_all(table: str, eq_filters: dict | None = None, page_size: int = 1000) -> list[dict]:
-    """Paginate through a Supabase table to bypass the default 1000-row limit.
-
-    The supabase-py client returns at most 1000 rows per request. For tables
-    with thousands of rows (dfs_lines can hit 5000+ with both PP and UD loaded),
-    a single .select() silently truncates. This loops with range() until
-    fewer rows come back than the page size.
-    """
-    out: list[dict] = []
-    offset = 0
-    while True:
-        q = db().table(table).select("*")
-        for k, v in (eq_filters or {}).items():
-            q = q.eq(k, v)
-        # Supabase range is inclusive on both ends.
-        q = q.range(offset, offset + page_size - 1)
-        chunk = q.execute().data or []
-        out.extend(chunk)
-        if len(chunk) < page_size:
-            break
-        offset += page_size
-        # Safety: cap at 50K rows. Anything more means something's wrong.
-        if offset > 50_000:
-            break
-    return out
-
-
 def load_dfs_lines(platform: str | None = None, sport: str | None = None) -> pd.DataFrame:
-    filters = {}
+    q = db().table("dfs_lines").select("*")
     if platform:
-        filters["platform"] = platform
+        q = q.eq("platform", platform)
     if sport:
-        filters["sport"] = sport
-    return pd.DataFrame(_fetch_all("dfs_lines", filters))
+        q = q.eq("sport", sport)
+    return pd.DataFrame(q.execute().data)
 
 
 # ----------------------------------------------------------------------------
