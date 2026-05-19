@@ -143,24 +143,75 @@ def load_matches(sport: str | None = None) -> pd.DataFrame:
 
 
 def load_latest_odds(sport: str | None = None) -> pd.DataFrame:
-    """Pull from v_latest_odds view, optionally filtered by sport (via matches join)."""
-    # supabase-py doesn't support joins; do it client-side.
-    odds_df = pd.DataFrame(db().table("v_latest_odds").select("*").execute().data)
-    if sport and not odds_df.empty:
+    """Pull latest odds per (event, market, player, line, side, book).
+
+    Originally used the `v_latest_odds` PostgreSQL view, but PostgREST has a
+    `db-max-rows` cap (1000 by default on Supabase free tier) that applies to
+    VIEWS even with `.range()` pagination — so the view could only ever return
+    1000 rows total. Symptoms: dashboard shows 0 props cached even though the
+    underlying tables have thousands of rows.
+
+    Fix: query the raw `odds` table (regular table, not a view, so pagination
+    works correctly), then dedupe in pandas. Same end result, no quirks.
+    """
+    odds_df = pd.DataFrame(_fetch_all("odds"))
+    if odds_df.empty:
+        return odds_df
+
+    # Replicate v_latest_odds: keep latest fetched_at per (event, market, player, line, side, book)
+    odds_df = (
+        odds_df
+        .sort_values("fetched_at")
+        .drop_duplicates(
+            subset=["event_id", "market", "player", "line", "side", "book"],
+            keep="last",
+        )
+        .reset_index(drop=True)
+    )
+
+    if sport:
         matches_df = load_matches(sport=sport)
         if matches_df.empty:
-            return odds_df.iloc[0:0]  # empty with right columns
+            return odds_df.iloc[0:0]
         odds_df = odds_df[odds_df["event_id"].isin(matches_df["id"])]
+
     return odds_df
 
 
+def _fetch_all(table: str, eq_filters: dict | None = None, page_size: int = 1000) -> list[dict]:
+    """Paginate through a Supabase table to bypass the default 1000-row limit.
+
+    The supabase-py client returns at most 1000 rows per request. For tables
+    with thousands of rows (dfs_lines can hit 5000+ with both PP and UD loaded),
+    a single .select() silently truncates. This loops with range() until
+    fewer rows come back than the page size.
+    """
+    out: list[dict] = []
+    offset = 0
+    while True:
+        q = db().table(table).select("*")
+        for k, v in (eq_filters or {}).items():
+            q = q.eq(k, v)
+        # Supabase range is inclusive on both ends.
+        q = q.range(offset, offset + page_size - 1)
+        chunk = q.execute().data or []
+        out.extend(chunk)
+        if len(chunk) < page_size:
+            break
+        offset += page_size
+        # Safety: cap at 50K rows. Anything more means something's wrong.
+        if offset > 50_000:
+            break
+    return out
+
+
 def load_dfs_lines(platform: str | None = None, sport: str | None = None) -> pd.DataFrame:
-    q = db().table("dfs_lines").select("*")
+    filters = {}
     if platform:
-        q = q.eq("platform", platform)
+        filters["platform"] = platform
     if sport:
-        q = q.eq("sport", sport)
-    return pd.DataFrame(q.execute().data)
+        filters["sport"] = sport
+    return pd.DataFrame(_fetch_all("dfs_lines", filters))
 
 
 # ----------------------------------------------------------------------------
