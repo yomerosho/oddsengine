@@ -30,16 +30,17 @@ from . import db
 # ============================================================================
 
 PP_ACTOR = "zen-studio/prizepicks-player-props"
-PP_APIFY_LEAGUES = ["NBA", "MLB", "NHL", "Soccer"]
+PP_APIFY_LEAGUES = ["NBA", "NFL"]
 
 UD_ACTOR = "brilliant_gum/sports-props-aggregator"
-UD_APIFY_SPORTS = ["NBA", "MLB", "SOCCER"]
+UD_APIFY_SPORTS = ["NBA", "NFL"]
 
 # ============================================================================
 # PrizePicks mappings (actor returns `stat` strings)
 # ============================================================================
 
 PP_STAT_TO_MARKET = {
+    # ----- NBA -----
     "Points": "player_points",
     "Rebounds": "player_rebounds",
     "Assists": "player_assists",
@@ -48,18 +49,31 @@ PP_STAT_TO_MARKET = {
     "Blocked Shots": "player_blocks",
     "Steals": "player_steals",
     "Turnovers": "player_turnovers",
-    "Pitcher Strikeouts": "pitcher_strikeouts",
-    "Hits": "batter_hits",
-    "Total Bases": "batter_total_bases",
-    "Home Runs": "batter_home_runs",
-    "RBIs": "batter_rbis",
-    "Goals": "player_goals",
-    "Shots On Goal": "player_shots_on_goal",
-    "Shots": "player_shots",
-    "Shots On Target": "player_shots_on_target",
+    # ----- NFL passing -----
+    "Pass Yards": "player_pass_yds",
+    "Passing Yards": "player_pass_yds",
+    "Pass TDs": "player_pass_tds",
+    "Passing TDs": "player_pass_tds",
+    "Pass Completions": "player_pass_completions",
+    "Pass Attempts": "player_pass_attempts",
+    "Interceptions Thrown": "player_pass_interceptions",
+    "INT": "player_pass_interceptions",
+    # ----- NFL rushing -----
+    "Rush Yards": "player_rush_yds",
+    "Rushing Yards": "player_rush_yds",
+    "Rush Attempts": "player_rush_attempts",
+    "Carries": "player_rush_attempts",
+    # ----- NFL receiving -----
+    "Receptions": "player_receptions",
+    "Receiving Yards": "player_reception_yds",
+    "Rec Yards": "player_reception_yds",
+    # ----- NFL combos / specials (skip — no sportsbook equivalent) -----
+    "Rush+Rec Yards": None,
+    "Pass+Rush Yards": None,
+    "Fantasy Score": None,
 }
 
-PP_LEAGUE_TO_SPORT = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "SOCCER": "SOCCER"}
+PP_LEAGUE_TO_SPORT = {"NBA": "NBA", "NFL": "NFL"}
 
 # ============================================================================
 # Underdog mappings — handles BOTH propType formats this actor emits.
@@ -70,7 +84,7 @@ PP_LEAGUE_TO_SPORT = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "SOCCER": "SOCCE
 # ============================================================================
 
 UD_PROPTYPE_TO_MARKET: dict[str, str | None] = {
-    # ----- already in our format -----
+    # ----- NBA: already in our format -----
     "player_points":     "player_points",
     "player_rebounds":   "player_rebounds",
     "player_assists":    "player_assists",
@@ -79,14 +93,14 @@ UD_PROPTYPE_TO_MARKET: dict[str, str | None] = {
     "player_steals":     "player_steals",
     "player_turnovers":  "player_turnovers",
 
-    # ----- short-form NBA variants the actor also emits -----
+    # ----- NBA short-form variants the actor also emits -----
     "points":            "player_points",
     "rebounds":          "player_rebounds",
     "assists":           "player_assists",
     "threes_made":       "player_threes",
     "pts_rebs_asts":     "player_points_rebounds_assists",
 
-    # ----- variants WITHOUT a sportsbook prop equivalent (skip) -----
+    # ----- NBA combos / specials (no sportsbook equivalent, skip) -----
     "points_rebounds":   None,
     "points_assists":    None,
     "rebounds_assists":  None,
@@ -100,21 +114,48 @@ UD_PROPTYPE_TO_MARKET: dict[str, str | None] = {
     "double_double":     None,
     "triple_double":     None,
 
-    # ----- MLB short-form -----
-    "strikeouts":        "pitcher_strikeouts",
-    "hits":              "batter_hits",
-    "total_bases":       "batter_total_bases",
-    "home_runs":         "batter_home_runs",
-    "rbis":              "batter_rbis",
-    # ----- NHL short-form -----
-    "goals":             "player_goals",
-    "shots_on_goal":     "player_shots_on_goal",
-    # ----- Soccer short-form -----
-    "shots":             "player_shots",
-    "shots_on_target":   "player_shots_on_target",
+    # ----- NFL passing -----
+    "player_pass_yds":         "player_pass_yds",
+    "pass_yds":                "player_pass_yds",
+    "passing_yards":           "player_pass_yds",
+    "player_pass_tds":         "player_pass_tds",
+    "pass_tds":                "player_pass_tds",
+    "passing_tds":             "player_pass_tds",
+    "player_pass_completions": "player_pass_completions",
+    "pass_completions":        "player_pass_completions",
+    "completions":             "player_pass_completions",
+    "player_pass_attempts":    "player_pass_attempts",
+    "pass_attempts":           "player_pass_attempts",
+    "player_pass_interceptions": "player_pass_interceptions",
+    "interceptions":           "player_pass_interceptions",
+
+    # ----- NFL rushing -----
+    "player_rush_yds":      "player_rush_yds",
+    "rush_yds":             "player_rush_yds",
+    "rushing_yards":        "player_rush_yds",
+    "player_rush_attempts": "player_rush_attempts",
+    "rush_attempts":        "player_rush_attempts",
+    "carries":              "player_rush_attempts",
+
+    # ----- NFL receiving -----
+    "player_receptions":    "player_receptions",
+    "receptions":           "player_receptions",
+    "player_reception_yds": "player_reception_yds",
+    "reception_yds":        "player_reception_yds",
+    "receiving_yards":      "player_reception_yds",
+
+    # ----- NFL anytime TD -----
+    "player_anytime_td":    "player_anytime_td",
+    "anytime_td":           "player_anytime_td",
+
+    # ----- NFL combos / specials (no sportsbook equivalent, skip) -----
+    "rush_rec_yds":         None,
+    "pass_rush_yds":        None,
+    "pass_rush_rec_tds":    None,
+    "fantasy_score":        None,
 }
 
-UD_SPORT_MAP = {"NBA": "NBA", "MLB": "MLB", "NHL": "NHL", "SOCCER": "SOCCER", "FIFA": "SOCCER"}
+UD_SPORT_MAP = {"NBA": "NBA", "NFL": "NFL"}
 
 
 # ============================================================================
@@ -207,7 +248,16 @@ def _parse_pp_items(items: list[dict]) -> tuple[list[dict], dict]:
         })
         counters["lines_added"] += 1
 
-    return rows, counters
+    # Defensive dedupe on the DB unique key. Last occurrence wins.
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["platform"], r["sport"], r["player"], r["market"], r["line"], r["odds_tier"])
+        seen[key] = r
+    deduped = list(seen.values())
+    counters["deduplicated"] = len(rows) - len(deduped)
+    counters["lines_added"] = len(deduped)
+
+    return deduped, counters
 
 
 # ============================================================================
@@ -276,7 +326,19 @@ def _parse_ud_items(items: list[dict]) -> tuple[list[dict], dict]:
         })
         counters["lines_added"] += 1
 
-    return rows, counters
+    # Deduplicate by the same key the DB has a unique constraint on:
+    # (platform, sport, player, market, line, odds_tier).
+    # This actor emits the same prop more than once (over-row + under-row);
+    # we keep the LAST occurrence so the most recent scrape wins.
+    seen: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["platform"], r["sport"], r["player"], r["market"], r["line"], r["odds_tier"])
+        seen[key] = r
+    deduped = list(seen.values())
+    counters["deduplicated"] = len(rows) - len(deduped)
+    counters["lines_added"] = len(deduped)
+
+    return deduped, counters
 
 
 # ============================================================================
