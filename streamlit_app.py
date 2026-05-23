@@ -47,6 +47,12 @@ PALETTE = {
 
 EDGE_THRESHOLD = 4.0  # USER.md per-leg floor
 
+# Sports the user actually plays. Single source of truth — used in the sport
+# selectbox, refresh loops, and maintenance cleanup. To add a sport later:
+# 1. Add it here, 2. Add a SPORTS entry in src/odds_api.py, 3. Add to the
+# Apify ingest lists in src/apify_ingest.py.
+ACTIVE_SPORTS = ["NBA", "NFL"]
+
 st.markdown(
     f"""
     <style>
@@ -127,7 +133,7 @@ with st.sidebar:
     st.markdown('<hr class="rule">', unsafe_allow_html=True)
 
     st.markdown("##### Filters")
-    sport = st.selectbox("Sport", ["All", "NBA", "MLB", "NHL", "SOCCER"], index=0,
+    sport = st.selectbox("Sport", ["All"] + ACTIVE_SPORTS, index=0,
                          help="'All' pulls cross-sport — the analyst can mix legs across leagues.")
 
     # In ALL mode, the market list is the union of every sport's markets.
@@ -189,7 +195,7 @@ with st.sidebar:
                 totals = {"games": 0, "props": 0, "purged_g": 0, "purged_d": 0}
                 quota_last = None
                 errs_all: list[str] = []
-                for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+                for s in ACTIVE_SPORTS:
                     try:
                         r = odds_api.refresh_sport(s, max_events=3)
                         totals["games"]    += r["games"]
@@ -251,7 +257,7 @@ with st.sidebar:
     st.markdown(f"**Quota** `{quota}`")
     if sport == "All":
         # Show each sport's last refresh in compact form
-        for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+        for s in ACTIVE_SPORTS:
             v = meta.get(f"last_refresh_{s}")
             if v:
                 st.caption(f"{s} odds · {v[:16].replace('T',' ')} UTC")
@@ -271,7 +277,7 @@ with st.sidebar:
             from datetime import datetime, timedelta, timezone
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
             totals = {"matches": 0, "dfs": 0}
-            for s in ["NBA", "MLB", "NHL", "SOCCER"]:
+            for s in ACTIVE_SPORTS:
                 try:
                     totals["matches"] += db.delete_stale_matches(s, cutoff)
                     totals["dfs"]     += db.delete_stale_dfs_lines(s, cutoff)
