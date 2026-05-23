@@ -39,35 +39,23 @@ SPORTS: dict[str, dict] = {
             "player_turnovers",
         ],
     },
-    "MLB": {
-        "keys": ["baseball_mlb"],
+    "NFL": {
+        "keys": ["americanfootball_nfl"],
         "prop_markets": [
-            "pitcher_strikeouts",
-            "batter_hits",
-            "batter_total_bases",
-            "batter_home_runs",
-            "batter_rbis",
-        ],
-    },
-    "NHL": {
-        "keys": ["icehockey_nhl"],
-        "prop_markets": [
-            "player_points",
-            "player_goals",
-            "player_assists",
-            "player_shots_on_goal",
-        ],
-    },
-    "SOCCER": {
-        "keys": [
-            "soccer_epl",
-            "soccer_spain_la_liga",
-            "soccer_germany_bundesliga",
-        ],
-        "prop_markets": [
-            "player_shots_on_target",
-            "player_shots",
-            "player_assists",
+            # Passing
+            "player_pass_yds",
+            "player_pass_tds",
+            "player_pass_completions",
+            "player_pass_attempts",
+            "player_pass_interceptions",
+            # Rushing
+            "player_rush_yds",
+            "player_rush_attempts",
+            # Receiving
+            "player_receptions",
+            "player_reception_yds",
+            # Defensive/special — Underdog/PrizePicks coverage varies
+            "player_anytime_td",
         ],
     },
 }
